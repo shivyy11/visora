@@ -7,68 +7,108 @@ import { renderPredictions } from "../utils/render-predictions";
 import * as tf from "@tensorflow/tfjs";
 import "@tensorflow/tfjs-backend-webgl";
 
-let detectInterval;
-
 const ObjectDetection = () => {
   const webcamRef = useRef(null);
   const canvasRef = useRef(null);
+  const modelRef = useRef(null);
+  const detectingRef = useRef(false);
 
   const [isLoading, setIsLoading] = useState(true);
 
-  const runCoco = async () => {
-    await tf.setBackend("webgl");
-    await tf.ready();
-
-    const net = await cocossdload();
-
-    setIsLoading(false);
-
-    detectInterval = setInterval(() => {
-      runObjectDetection(net);
-    }, 10);
-  };
-
-  async function runObjectDetection(net) {
-    if (
-      canvasRef.current &&
-      webcamRef.current != null &&
-      webcamRef.current.video?.readyState === 4
-    ) {
-      canvasRef.current.width = webcamRef.current.video.videoWidth;
-      canvasRef.current.height = webcamRef.current.video.videoHeight;
-
-      const detectedObjects = await net.detect(
-        webcamRef.current.video,
-        undefined,
-        0.6,
-      );
-
-        //   console.log(detectedObjects);
-        
-        const context = canvasRef.current.getContext("2d");
-        renderPredictions(detectedObjects, context);
-    }
-  }
-
-  const showmyVideo = () => {
-    if (
-      webcamRef.current != null &&
-      webcamRef.current.video?.readyState === 4
-    ) {
-      const myVideoWidth = webcamRef.current.video.videoWidth;
-      const myVideoHeight = webcamRef.current.video.videoHeight;
-
-      webcamRef.current.video.width = myVideoWidth;
-      webcamRef.current.video.height = myVideoHeight;
-    }
+  const videoConstraints = {
+    width: 1280,
+    height: 720,
+    facingMode: { ideal: "user" },
   };
 
   useEffect(() => {
+    let isMounted = true;
+    let animationFrameId;
+
+    const runCoco = async () => {
+      try {
+        await tf.setBackend("webgl");
+        await tf.ready();
+
+        console.log("TensorFlow backend:", tf.getBackend());
+
+        const net = await cocossdload();
+
+        if (!isMounted) return;
+
+        modelRef.current = net;
+        setIsLoading(false);
+
+        const detectObjects = async () => {
+          if (!isMounted) return;
+
+          const webcam = webcamRef.current;
+          const video = webcam?.video;
+          const canvas = canvasRef.current;
+
+          if (!video || !canvas || video.readyState !== 4) {
+            animationFrameId = requestAnimationFrame(detectObjects);
+            return;
+          }
+
+          // Don't start another detection while one is already running
+          if (detectingRef.current) {
+            animationFrameId = requestAnimationFrame(detectObjects);
+            return;
+          }
+
+          detectingRef.current = true;
+
+          try {
+            const videoWidth = video.videoWidth;
+            const videoHeight = video.videoHeight;
+
+            if (videoWidth === 0 || videoHeight === 0) {
+              detectingRef.current = false;
+              animationFrameId = requestAnimationFrame(detectObjects);
+              return;
+            }
+
+            canvas.width = videoWidth;
+            canvas.height = videoHeight;
+
+            const predictions = await net.detect(video, undefined, 0.5);
+
+            if (isMounted) {
+              console.log("Predictions:", predictions);
+
+              const context = canvas.getContext("2d");
+
+              if (context) {
+                renderPredictions(predictions, context);
+              }
+            }
+          } catch (error) {
+            console.error("Object detection error:", error);
+          } finally {
+            detectingRef.current = false;
+          }
+
+          if (isMounted) {
+            animationFrameId = requestAnimationFrame(detectObjects);
+          }
+        };
+
+        detectObjects();
+      } catch (error) {
+        console.error("COCO-SSD loading error:", error);
+        setIsLoading(false);
+      }
+    };
+
     runCoco();
-    showmyVideo();
 
     return () => {
-      clearInterval(detectInterval);
+      isMounted = false;
+
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
     };
   }, []);
 
@@ -77,11 +117,14 @@ const ObjectDetection = () => {
       {isLoading ? (
         <div className="gradient-title">Loading AI Model....</div>
       ) : (
-        <div className="relative flex justify-center items-center gradient p-1.5 rounded-b-md">
+        <div className="relative flex justify-center items-center gradient p-1.5 rounded-b-md overflow-hidden">
           <Webcam
             ref={webcamRef}
             className="rounded-md w-full lg:h-180"
             muted
+            audio={false}
+            mirrored
+            videoConstraints={videoConstraints}
           />
 
           <canvas
